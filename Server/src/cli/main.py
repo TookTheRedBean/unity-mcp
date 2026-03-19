@@ -272,6 +272,7 @@ def register_commands():
         ("cli.commands.packages", "packages"),
         ("cli.commands.reflect", "reflect"),
         ("cli.commands.docs", "docs"),
+        ("cli.commands.addressables", "addressables"),
     ]
 
     for module_name, command_name in optional_commands:

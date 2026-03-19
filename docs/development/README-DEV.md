@@ -38,7 +38,7 @@ After switching, open Package Manager in Unity and Refresh to re-resolve package
 
 ## Tool Selection & the Meta-Tool
 
-MCP for Unity organizes tools into **groups** (Core, VFX & Shaders, Animation, UI Toolkit, Scripting Extensions, Testing). You can selectively enable or disable tools to control which capabilities are exposed to AI clients — reducing context window usage and focusing the AI on relevant tools.
+MCP for Unity organizes tools into **groups** (Core, VFX & Shaders, Animation, UI Toolkit, Scripting Extensions, Testing, ProBuilder, Addressables). You can selectively enable or disable tools to control which capabilities are exposed to AI clients — reducing context window usage and focusing the AI on relevant tools.
 
 ### Using the Tools Tab in the Editor
 

@@ -272,6 +272,64 @@ unity-mcp probuilder raw bevel_edges "MyCube" --params '{"edgeIndices": [0,1], "
 unity-mcp probuilder raw set_face_material "MyCube" --params '{"faceIndices": [0], "materialPath": "Assets/Materials/Red.mat"}'
 ```
 
+### Addressables Operations
+
+Note: Requires com.unity.addressables package installed in your Unity project.
+
+```bash
+# Check if Addressables is available
+unity-mcp addressables raw ping
+
+# List all groups
+unity-mcp addressables groups
+
+# Create and remove groups
+unity-mcp addressables group-create MyDLC
+unity-mcp addressables group-remove MyDLC
+
+# Mark an asset as addressable
+unity-mcp addressables add Assets/Prefabs/Player.prefab
+unity-mcp addressables add Assets/Prefabs/Player.prefab --group MyDLC --address player
+unity-mcp addressables add Assets/Audio/bgm.wav -l music -l background
+
+# Remove an asset from addressables
+unity-mcp addressables remove Assets/Prefabs/Player.prefab
+
+# Change an entry's address key
+unity-mcp addressables set-address Assets/Prefabs/Player.prefab player
+
+# Search entries
+unity-mcp addressables find --query player
+unity-mcp addressables find --label music --group MyDLC
+
+# Move entry to a different group
+unity-mcp addressables move Assets/Prefabs/Player.prefab RemoteAssets
+
+# Manage labels
+unity-mcp addressables labels
+unity-mcp addressables label-add remote
+unity-mcp addressables label-remove remote
+unity-mcp addressables label-set Assets/Prefabs/Player.prefab remote
+unity-mcp addressables label-set Assets/Prefabs/Player.prefab remote --disable
+
+# Profile management
+unity-mcp addressables profiles
+unity-mcp addressables profile-get Default
+unity-mcp addressables profile-set Default RemoteBuildPath "ServerData/[BuildTarget]"
+unity-mcp addressables profile-activate Default
+
+# Build addressable content
+unity-mcp addressables build
+unity-mcp addressables build-update
+unity-mcp addressables build-update --content-state-path path/to/state.bin
+unity-mcp addressables build-clean
+
+# Settings
+unity-mcp addressables settings
+unity-mcp addressables set-setting max_concurrent_web_requests 128
+unity-mcp addressables set-setting unique_bundle_ids true
+```
+
 ### Batch Operations
 
 ```bash

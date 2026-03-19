@@ -114,6 +114,10 @@
       "description": "Create, instantiate, unpack, and modify prefabs"
     },
     {
+      "name": "manage_addressables",
+      "description": "Manage Unity Addressable Assets: groups, entries, labels, and content builds"
+    },
+    {
       "name": "manage_probuilder",
       "description": "Create and edit ProBuilder meshes, shapes, and geometry operations"
     },

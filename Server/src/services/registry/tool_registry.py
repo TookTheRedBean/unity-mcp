@@ -24,6 +24,7 @@ TOOL_GROUPS: dict[str, str] = {
     "scripting_ext": "ScriptableObject management",
     "testing": "Test runner & async test jobs",
     "probuilder": "ProBuilder 3D modeling – requires com.unity.probuilder package",
+    "addressables": "Addressable Assets – dynamic loading, groups, labels & builds (requires com.unity.addressables)",
 }
 
 DEFAULT_ENABLED_GROUPS: set[str] = {"core"}

@@ -19,6 +19,7 @@ Complete reference for all MCP tools. Each tool includes parameters, types, and 
 - [Graphics Tools](#graphics-tools)
 - [Package Tools](#package-tools)
 - [ProBuilder Tools](#probuilder-tools)
+- [Addressables Tools](#addressables-tools)
 - [Docs Tools](#docs-tools)
 
 ---
@@ -1280,6 +1281,130 @@ manage_probuilder(action="validate_mesh", target="MyCube")
 ```
 
 See also: [ProBuilder Workflow Guide](probuilder-guide.md) for detailed patterns and complex object examples.
+
+---
+
+## Addressables Tools
+
+### manage_addressables
+
+Manage Unity Addressable Assets: groups, entries, labels, profiles, builds & settings. Requires `com.unity.addressables` package. Group: `addressables` (disabled by default — activate with `manage_tools(action="activate", group="addressables")`).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | Action to perform (see categories below) |
+| `path` | string | Sometimes | Asset path or GUID for entry operations |
+| `group` | string | Sometimes | Group name for group/entry operations |
+| `address` | string | Sometimes | Addressable address key |
+| `label` | string | Sometimes | Label name for label operations |
+| `labels` | list[str] | No | Labels to apply in entry_add |
+| `enabled` | bool | No | Enable/disable flag for label_set (default true) |
+| `query` | string | No | Search query for entry_find (matches address or path) |
+| `target_group` | string | Sometimes | Target group for entry_move |
+| `profile` | string | Sometimes | Profile name for profile operations |
+| `variable` | string | Sometimes | Profile variable name for profile_set |
+| `value` | string | Sometimes | Value for profile_set or set_settings |
+| `key` | string | Sometimes | Settings key for set_settings |
+| `content_state_path` | string | No | Content state file path for build_update (auto-detected if omitted) |
+| `page_size` | int | No | Results per page (default 50) |
+| `page_number` | int | No | Page number, 1-based (default 1) |
+
+**Actions by category:**
+
+**Groups:**
+- `group_list` — List all addressable groups with entry counts and schema types (paged)
+- `group_create` — Create a new group (group required)
+- `group_remove` — Remove a group (group required, cannot remove default group)
+
+**Entries:**
+- `entry_add` — Mark an asset as addressable (path required, group/address/labels optional)
+- `entry_remove` — Remove an asset from addressables (path required)
+- `entry_set_address` — Change an entry's address key (path + address required)
+- `entry_find` — Search entries by address/path substring, label, or group name (paged)
+- `entry_move` — Move an entry to a different group (path + target_group required)
+
+**Labels:**
+- `label_list` — List all defined labels
+- `label_add` — Add a new label to the global label list (label required)
+- `label_remove` — Remove a label from the global label list (label required)
+- `label_set` — Toggle a label on an entry (path + label required, enabled defaults to true)
+
+**Profiles:**
+- `profile_list` — List all profiles with their variables
+- `profile_get` — Get a single profile's variables (profile required)
+- `profile_set` — Update a variable in a profile (profile + variable + value required)
+- `profile_set_active` — Switch the active profile (profile required)
+
+**Build:**
+- `build_content` — Full build of all addressable content (async, may take a while)
+- `build_update` — Incremental content update build (content_state_path optional, auto-detected)
+- `build_clean` — Clean addressable build artifacts
+
+**Settings:**
+- `get_settings` — Read global Addressables configuration (active profile, counts, build config)
+- `set_settings` — Update a setting by key (key + value required). Valid keys: player_version_override, max_concurrent_web_requests, unique_bundle_ids, contiguous_bundles, non_recursive_dependency_calculation, build_remote_catalog
+
+**Utility:**
+- `ping` — Check if Addressables is available, returns package version and group count
+
+**Examples:**
+
+```python
+# Check availability
+manage_addressables(action="ping")
+
+# List groups
+manage_addressables(action="group_list")
+
+# Create a group for DLC content
+manage_addressables(action="group_create", group="DLC")
+
+# Mark an asset as addressable with a custom address
+manage_addressables(action="entry_add",
+    path="Assets/Prefabs/Player.prefab", group="DLC", address="player")
+
+# Add labels during entry creation
+manage_addressables(action="entry_add",
+    path="Assets/Audio/bgm.wav", labels=["music", "background"])
+
+# Search entries by address
+manage_addressables(action="entry_find", query="player")
+
+# Filter entries by label and group
+manage_addressables(action="entry_find", label="music", group="DLC")
+
+# Move entry to a different group
+manage_addressables(action="entry_move",
+    path="Assets/Prefabs/Player.prefab", target_group="RemoteAssets")
+
+# Manage labels
+manage_addressables(action="label_add", label="remote")
+manage_addressables(action="label_set",
+    path="Assets/Prefabs/Player.prefab", label="remote", enabled=True)
+
+# Profile management
+manage_addressables(action="profile_list")
+manage_addressables(action="profile_get", profile="Default")
+manage_addressables(action="profile_set",
+    profile="Default", variable="RemoteBuildPath", value="ServerData/[BuildTarget]")
+manage_addressables(action="profile_set_active", profile="Default")
+
+# Build addressable content
+manage_addressables(action="build_content")
+manage_addressables(action="build_update")
+manage_addressables(action="build_clean")
+
+# Settings
+manage_addressables(action="get_settings")
+manage_addressables(action="set_settings", key="max_concurrent_web_requests", value="128")
+manage_addressables(action="set_settings", key="unique_bundle_ids", value="true")
+```
+
+**Resources:**
+- `mcpforunity://addressables/groups` — Quick summary of all addressable groups with entry counts
+- `mcpforunity://addressables/settings` — Global Addressables settings: active profile, build config, counts
 
 ---
 
