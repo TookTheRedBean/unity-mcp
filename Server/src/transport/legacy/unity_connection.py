@@ -775,6 +775,32 @@ def _is_reloading_response(resp: object) -> bool:
     return _extract_response_reason(resp) == "reloading"
 
 
+def _probe_editor_state_sync(conn) -> dict[str, Any] | None:
+    """Probe get_editor_state via the stdio connection to check compilation status.
+
+    Returns the compilation dict if available, or None on failure.
+    """
+    try:
+        resp = conn.send_command("get_editor_state", {})
+    except Exception:
+        return None
+    if not isinstance(resp, dict):
+        return None
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else resp.get("result")
+    if not isinstance(data, dict):
+        return None
+    compilation = data.get("compilation")
+    return compilation if isinstance(compilation, dict) else None
+
+
+def _is_editor_ready_sync(conn) -> bool:
+    """Check if the editor reports it's done compiling and has no pending domain reload."""
+    compilation = _probe_editor_state_sync(conn)
+    if compilation is None:
+        return True  # Can't determine → assume ready
+    return not compilation.get("is_compiling", False) and not compilation.get("is_domain_reload_pending", False)
+
+
 def send_command_with_retry(
     command_type: str,
     params: dict[str, Any],
@@ -800,6 +826,10 @@ def send_command_with_retry(
 
     Uses config.reload_retry_ms and config.reload_max_retries by default. Preserves the
     structured failure if retries are exhausted.
+
+    Uses deterministic detection (Issue #657): when a "reloading" response is received,
+    probes get_editor_state to detect when compilation finishes and retries immediately
+    instead of blind-waiting with fixed sleep intervals.
     """
     t_retry_start = time.time()
     logger.info("[TIMING-STDIO] send_command_with_retry START command=%s", command_type)
@@ -810,25 +840,19 @@ def send_command_with_retry(
         max_retries = getattr(config, "reload_max_retries", 40)
     if retry_ms is None:
         retry_ms = getattr(config, "reload_retry_ms", 250)
-    # Default to 20s to handle domain reloads (which can take 10-20s after tests or script changes).
+    # Default reduced to 10s (from 20s) now that we use deterministic detection.
+    # Most reloads complete in 3-5s; 10s is a safety bound.
     #
-    # NOTE: This wait can impact agentic workflows where domain reloads happen
-    # frequently (e.g., after test runs, script compilation). The 20s default
-    # balances handling slow reloads vs. avoiding unnecessary delays.
-    #
-    # TODO: Make this more deterministic by detecting Unity's actual reload state
-    # rather than blindly waiting up to 20s. See Issue #657.
-    #
-    # Configurable via: UNITY_MCP_RELOAD_MAX_WAIT_S (default: 20.0, max: 20.0)
+    # Configurable via: UNITY_MCP_RELOAD_MAX_WAIT_S (default: 10.0, max: 20.0)
     try:
         max_wait_s = float(os.environ.get(
-            "UNITY_MCP_RELOAD_MAX_WAIT_S", "20.0"))
+            "UNITY_MCP_RELOAD_MAX_WAIT_S", "10.0"))
     except ValueError as e:
-        raw_val = os.environ.get("UNITY_MCP_RELOAD_MAX_WAIT_S", "20.0")
+        raw_val = os.environ.get("UNITY_MCP_RELOAD_MAX_WAIT_S", "10.0")
         logger.warning(
-            "Invalid UNITY_MCP_RELOAD_MAX_WAIT_S=%r, using default 20.0: %s",
+            "Invalid UNITY_MCP_RELOAD_MAX_WAIT_S=%r, using default 10.0: %s",
             raw_val, e)
-        max_wait_s = 20.0
+        max_wait_s = 10.0
     # Clamp to [0, 20] to prevent misconfiguration from causing excessive waits
     max_wait_s = max(0.0, min(max_wait_s, 20.0))
 
@@ -856,6 +880,29 @@ def send_command_with_retry(
         elapsed = time.monotonic() - wait_started
         if elapsed >= max_wait_s:
             break
+
+        # Deterministic probe (Issue #657): check if the editor is done compiling
+        # before retrying the actual command. This avoids unnecessary retries
+        # when the editor reports it's ready, and shortens waits significantly.
+        if command_type != "get_editor_state":
+            compilation = _probe_editor_state_sync(conn)
+            if compilation is not None:
+                is_compiling = compilation.get("is_compiling", False)
+                is_reload_pending = compilation.get("is_domain_reload_pending", False)
+                if not is_compiling and not is_reload_pending:
+                    logger.debug(
+                        "Editor ready detected via probe: command=%s instance=%s",
+                        command_type, instance_id or "default",
+                    )
+                    retries += 1
+                    response = conn.send_command(command_type, params)
+                    reason = _extract_response_reason(response)
+                    continue
+                logger.debug(
+                    "Editor still busy (probe): is_compiling=%s is_domain_reload_pending=%s command=%s",
+                    is_compiling, is_reload_pending, command_type,
+                )
+
         delay_ms = retry_ms
         if isinstance(response, dict):
             retry_after = response.get("retry_after_ms")

@@ -280,3 +280,337 @@ async def test_plugin_hub_respects_unity_instance_preference():
         # Clean up: restore original PluginHub state
         PluginHub._registry = original_registry
         PluginHub._lock = original_lock
+
+
+# ------------------------------------------------------------------
+# Deterministic domain reload detection tests (Issue #657)
+# ------------------------------------------------------------------
+
+import time
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_probes_editor_state_after_reconnect():
+    """After session reconnects, _resolve_session_id probes get_editor_state
+    to confirm the editor is done compiling before returning."""
+    from transport.plugin_hub import PluginHub
+    from transport.plugin_registry import PluginRegistry, PluginSession
+
+    mock_registry = AsyncMock(spec=PluginRegistry)
+
+    call_count = [0]
+    probe_count = [0]
+
+    now = datetime.now()
+    session = PluginSession(
+        session_id="test-session-probe",
+        project_name="TestProject",
+        project_hash="probe_hash",
+        unity_version="2022.3.0f1",
+        registered_at=now,
+        connected_at=now,
+    )
+
+    async def mock_list_sessions(**kwargs):
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            return {}
+        return {"test-session-probe": session}
+
+    async def mock_get_session_id_by_hash(project_hash, user_id=None):
+        if call_count[0] <= 2:
+            return None
+        if project_hash == "probe_hash":
+            return "test-session-probe"
+        return None
+
+    mock_registry.list_sessions = mock_list_sessions
+    mock_registry.get_session_id_by_hash = mock_get_session_id_by_hash
+
+    original_registry = PluginHub._registry
+    original_lock = PluginHub._lock
+    original_known = PluginHub._known_project_hashes.copy()
+    original_connections = PluginHub._connections.copy()
+    PluginHub._registry = mock_registry
+    PluginHub._lock = asyncio.Lock()
+    # Pre-seed known hash so we get the longer reload timeout
+    PluginHub._known_project_hashes.add("probe_hash")
+
+    # Mock send_command to simulate get_editor_state responses
+    async def mock_send_command_impl(cls, session_id, command_type, params):
+        if command_type == "get_editor_state":
+            probe_count[0] += 1
+            if probe_count[0] <= 1:
+                # First probe: still compiling
+                return {
+                    "status": "success",
+                    "data": {
+                        "compilation": {
+                            "is_compiling": True,
+                            "is_domain_reload_pending": False,
+                        }
+                    },
+                }
+            # Second probe onward: done compiling
+            return {
+                "status": "success",
+                "data": {
+                    "compilation": {
+                        "is_compiling": False,
+                        "is_domain_reload_pending": False,
+                    }
+                },
+            }
+        return {"status": "success"}
+
+    original_send = PluginHub.send_command
+    PluginHub.send_command = classmethod(mock_send_command_impl)
+
+    try:
+        session_id = await PluginHub._resolve_session_id(
+            unity_instance="probe_hash"
+        )
+        assert session_id == "test-session-probe"
+        # Should have probed editor state at least twice (once compiling, once ready)
+        assert probe_count[0] >= 2
+    finally:
+        PluginHub._registry = original_registry
+        PluginHub._lock = original_lock
+        PluginHub._known_project_hashes = original_known
+        PluginHub._connections = original_connections
+        PluginHub.send_command = original_send
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_proceeds_immediately_when_editor_ready():
+    """If the editor reports ready immediately after reconnect, _resolve_session_id
+    should not add extra delay."""
+    from transport.plugin_hub import PluginHub
+    from transport.plugin_registry import PluginRegistry, PluginSession
+
+    mock_registry = AsyncMock(spec=PluginRegistry)
+
+    call_count = [0]
+
+    now = datetime.now()
+    session = PluginSession(
+        session_id="test-session-fast",
+        project_name="TestProject",
+        project_hash="fast_hash",
+        unity_version="2022.3.0f1",
+        registered_at=now,
+        connected_at=now,
+    )
+
+    async def mock_list_sessions(**kwargs):
+        call_count[0] += 1
+        if call_count[0] <= 1:
+            return {}
+        # Single session → auto-select
+        return {"test-session-fast": session}
+
+    mock_registry.list_sessions = mock_list_sessions
+
+    original_registry = PluginHub._registry
+    original_lock = PluginHub._lock
+    original_known = PluginHub._known_project_hashes.copy()
+    PluginHub._registry = mock_registry
+    PluginHub._lock = asyncio.Lock()
+    PluginHub._known_project_hashes.add("fast_hash")
+
+    # Editor immediately reports ready
+    async def mock_send_command_impl(cls, session_id, command_type, params):
+        if command_type == "get_editor_state":
+            return {
+                "status": "success",
+                "data": {
+                    "compilation": {
+                        "is_compiling": False,
+                        "is_domain_reload_pending": False,
+                    }
+                },
+            }
+        return {"status": "success"}
+
+    original_send = PluginHub.send_command
+    PluginHub.send_command = classmethod(mock_send_command_impl)
+
+    try:
+        t0 = time.monotonic()
+        # Use unity_instance=None with single session for auto-select
+        session_id = await PluginHub._resolve_session_id(
+            unity_instance=None
+        )
+        elapsed = time.monotonic() - t0
+        assert session_id == "test-session-fast"
+        # Should complete quickly (well under 2s) since editor is ready immediately
+        assert elapsed < 2.0
+    finally:
+        PluginHub._registry = original_registry
+        PluginHub._lock = original_lock
+        PluginHub._known_project_hashes = original_known
+        PluginHub.send_command = original_send
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_fails_fast_without_history(monkeypatch):
+    """When no previous session existed for the target hash, _resolve_session_id
+    should use the shorter timeout (~5s) instead of the full reload timeout."""
+    from transport.plugin_hub import PluginHub, NoUnitySessionError
+    from transport.plugin_registry import PluginRegistry
+
+    mock_registry = AsyncMock(spec=PluginRegistry)
+    mock_registry.get_session_id_by_hash = AsyncMock(return_value=None)
+    mock_registry.list_sessions = AsyncMock(return_value={})
+
+    original_registry = PluginHub._registry
+    original_lock = PluginHub._lock
+    original_known = PluginHub._known_project_hashes.copy()
+    PluginHub._registry = mock_registry
+    PluginHub._lock = asyncio.Lock()
+    # Ensure no history for target hash
+    PluginHub._known_project_hashes.discard("unknown_hash")
+
+    # Don't set env var so adaptive timeout kicks in
+    monkeypatch.delenv("UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S", raising=False)
+
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(NoUnitySessionError):
+            await PluginHub._resolve_session_id(
+                unity_instance="unknown_hash"
+            )
+        elapsed = time.monotonic() - t0
+        # Should fail within ~5s (the no-history timeout), not 10s or 20s
+        assert elapsed < 7.0
+        # Should have waited at least some time
+        assert elapsed >= 4.0
+    finally:
+        PluginHub._registry = original_registry
+        PluginHub._lock = original_lock
+        PluginHub._known_project_hashes = original_known
+
+
+@pytest.mark.asyncio
+async def test_known_project_hashes_populated_on_register():
+    """_known_project_hashes should be populated when a plugin registers."""
+    from transport.plugin_hub import PluginHub
+
+    original_known = PluginHub._known_project_hashes.copy()
+    try:
+        # Simulate what _handle_register does
+        test_hash = "test_reg_hash_12345"
+        PluginHub._known_project_hashes.add(test_hash)
+        assert test_hash in PluginHub._known_project_hashes
+    finally:
+        PluginHub._known_project_hashes = original_known
+
+
+@pytest.mark.asyncio
+async def test_probe_editor_ready_handles_failure_gracefully():
+    """_probe_editor_ready should return False when all probes fail within deadline."""
+    from transport.plugin_hub import PluginHub
+
+    async def mock_send_command_impl(cls, session_id, command_type, params):
+        raise ConnectionError("Unity disconnected")
+
+    original_send = PluginHub.send_command
+    PluginHub.send_command = classmethod(mock_send_command_impl)
+
+    try:
+        # Give a very short deadline so it doesn't loop forever
+        result = await PluginHub._probe_editor_ready(
+            "fake-session", time.monotonic() + 0.5
+        )
+        # Should return False (deadline exceeded with all failures)
+        assert result is False
+    finally:
+        PluginHub.send_command = original_send
+
+
+# --- Stdio transport deterministic detection tests ---
+
+def test_stdio_probe_editor_state_sync_success():
+    """_probe_editor_state_sync returns compilation dict on success."""
+    from transport.legacy.unity_connection import _probe_editor_state_sync
+
+    class MockConn:
+        def send_command(self, cmd, params, **kwargs):
+            return {
+                "data": {
+                    "compilation": {
+                        "is_compiling": True,
+                        "is_domain_reload_pending": False,
+                    }
+                }
+            }
+
+    result = _probe_editor_state_sync(MockConn())
+    assert result is not None
+    assert result["is_compiling"] is True
+
+
+def test_stdio_probe_editor_state_sync_failure():
+    """_probe_editor_state_sync returns None when probe fails."""
+    from transport.legacy.unity_connection import _probe_editor_state_sync
+
+    class MockConn:
+        def send_command(self, cmd, params, **kwargs):
+            raise ConnectionError("disconnected")
+
+    result = _probe_editor_state_sync(MockConn())
+    assert result is None
+
+
+def test_stdio_is_editor_ready_sync_when_done():
+    """_is_editor_ready_sync returns True when not compiling."""
+    from transport.legacy.unity_connection import _is_editor_ready_sync
+
+    class MockConn:
+        def send_command(self, cmd, params, **kwargs):
+            return {
+                "data": {
+                    "compilation": {
+                        "is_compiling": False,
+                        "is_domain_reload_pending": False,
+                    }
+                }
+            }
+
+    assert _is_editor_ready_sync(MockConn()) is True
+
+
+def test_stdio_is_editor_ready_sync_when_compiling():
+    """_is_editor_ready_sync returns False when compiling."""
+    from transport.legacy.unity_connection import _is_editor_ready_sync
+
+    class MockConn:
+        def send_command(self, cmd, params, **kwargs):
+            return {
+                "data": {
+                    "compilation": {
+                        "is_compiling": True,
+                        "is_domain_reload_pending": False,
+                    }
+                }
+            }
+
+    assert _is_editor_ready_sync(MockConn()) is False
+
+
+def test_stdio_is_editor_ready_sync_when_reload_pending():
+    """_is_editor_ready_sync returns False when domain reload is pending."""
+    from transport.legacy.unity_connection import _is_editor_ready_sync
+
+    class MockConn:
+        def send_command(self, cmd, params, **kwargs):
+            return {
+                "data": {
+                    "compilation": {
+                        "is_compiling": False,
+                        "is_domain_reload_pending": True,
+                    }
+                }
+            }
+
+    assert _is_editor_ready_sync(MockConn()) is False

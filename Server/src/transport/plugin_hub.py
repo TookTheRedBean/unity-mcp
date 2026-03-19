@@ -121,6 +121,10 @@ class PluginHub(WebSocketEndpoint):
     _last_pong: ClassVar[dict[str, float]] = {}
     # session_id -> ping task
     _ping_tasks: ClassVar[dict[str, asyncio.Task]] = {}
+    # Project hashes that have been seen in at least one registration.
+    # Used by _resolve_session_id to distinguish "Unity not running" from
+    # "domain reload in progress" and fail fast in the former case.
+    _known_project_hashes: ClassVar[set[str]] = set()
 
     @classmethod
     def configure(
@@ -479,6 +483,9 @@ class PluginHub(WebSocketEndpoint):
                     exc_info=True,
                 )
 
+        # Track that we've seen this project hash connect at least once.
+        cls._known_project_hashes.add(project_hash)
+
         if user_id:
             logger.info(f"Plugin registered: {project_name} ({project_hash}) for user {user_id}")
         else:
@@ -821,6 +828,59 @@ class PluginHub(WebSocketEndpoint):
     # ------------------------------------------------------------------
     # Session resolution helpers
     # ------------------------------------------------------------------
+
+    # Default max wait when we believe a domain reload is in progress (previous session existed).
+    _RELOAD_MAX_WAIT_S = 10.0
+    # Shorter timeout when no previous session was seen — Unity probably isn't running.
+    _NO_HISTORY_MAX_WAIT_S = 5.0
+
+    @classmethod
+    async def _probe_editor_ready(cls, session_id: str, deadline: float) -> bool:
+        """Probe get_editor_state to check if Unity is done compiling/reloading.
+
+        Returns True when the editor reports it's no longer compiling and has no
+        pending domain reload, or when the probe can't be performed (fallback to ready).
+        Polls until deadline is reached if the editor is still busy.
+        """
+        while time.monotonic() < deadline:
+            try:
+                resp = await cls.send_command(session_id, "get_editor_state", {})
+            except Exception:
+                # If the probe fails (e.g., session dropped again), treat as not-ready
+                # but don't block forever — caller's deadline will break the loop.
+                await asyncio.sleep(0.25)
+                continue
+
+            if not isinstance(resp, dict):
+                return True  # Can't parse → assume ready
+
+            # Handle transport-level failures (plugin disconnected, timeout)
+            if not resp.get("success", True) and resp.get("hint") == "retry":
+                await asyncio.sleep(0.25)
+                continue
+
+            data = resp.get("data") if isinstance(resp.get("data"), dict) else resp.get("result")
+            if not isinstance(data, dict):
+                return True  # No structured data → assume ready
+
+            compilation = data.get("compilation")
+            if not isinstance(compilation, dict):
+                return True  # No compilation info → assume ready
+
+            is_compiling = compilation.get("is_compiling", False)
+            is_reload_pending = compilation.get("is_domain_reload_pending", False)
+
+            if not is_compiling and not is_reload_pending:
+                return True  # Editor is ready
+
+            logger.debug(
+                "Editor still busy: is_compiling=%s is_domain_reload_pending=%s session=%s",
+                is_compiling, is_reload_pending, session_id,
+            )
+            await asyncio.sleep(0.25)
+
+        return False  # Deadline exceeded while editor was still busy
+
     @classmethod
     async def _resolve_session_id(
         cls,
@@ -835,6 +895,10 @@ class PluginHub(WebSocketEndpoint):
         no sessions are available, we wait for a bounded period for a plugin
         to reconnect so in-flight MCP calls can succeed transparently.
 
+        Uses deterministic detection (Issue #657): after reconnection, probes
+        get_editor_state to check compilation/reload status rather than blind-waiting.
+        Also fails fast (~5s) when no previous session existed for the target project.
+
         Args:
             unity_instance: Target instance (Name@hash or hash)
             user_id: User ID from API key validation (for remote-hosted mode session isolation)
@@ -842,35 +906,6 @@ class PluginHub(WebSocketEndpoint):
         """
         if cls._registry is None:
             raise RuntimeError("Plugin registry not configured")
-
-        # Bound waiting for Unity sessions. Default to 20s to handle domain reloads
-        # (which can take 10-20s after test runs or script changes).
-        #
-        # NOTE: This wait can impact agentic workflows where domain reloads happen
-        # frequently (e.g., after test runs, script compilation). The 20s default
-        # balances handling slow reloads vs. avoiding unnecessary delays.
-        #
-        # TODO: Make this more deterministic by detecting Unity's actual reload state
-        # (e.g., via status file, heartbeat, or explicit "reloading" signal from Unity)
-        # rather than blindly waiting up to 20s. See Issue #657.
-        #
-        # Configurable via: UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S (default: 20.0, max: 20.0)
-        try:
-            max_wait_s = float(
-                os.environ.get("UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S", "20.0"))
-        except ValueError as e:
-            raw_val = os.environ.get(
-                "UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S", "20.0")
-            logger.warning(
-                "Invalid UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S=%r, using default 20.0: %s",
-                raw_val, e)
-            max_wait_s = 20.0
-        # Clamp to [0, 20] to prevent misconfiguration from causing excessive waits
-        max_wait_s = max(0.0, min(max_wait_s, 20.0))
-        if not retry_on_reload:
-            max_wait_s = 0.0
-        retry_ms = float(getattr(config, "reload_retry_ms", 250))
-        sleep_seconds = max(0.05, min(0.25, retry_ms / 1000.0))
 
         # Allow callers to provide either just the hash or Name@hash
         target_hash: str | None = None
@@ -880,6 +915,35 @@ class PluginHub(WebSocketEndpoint):
                 target_hash = suffix or None
             else:
                 target_hash = unity_instance
+
+        # Determine max wait based on whether we've seen this project before.
+        # If a previous session existed for this hash, we're likely in a domain reload
+        # and should allow a longer wait. Otherwise, Unity probably isn't running.
+        #
+        # Configurable via: UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S (overrides both defaults)
+        env_max_wait = os.environ.get("UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S")
+        if env_max_wait is not None:
+            try:
+                max_wait_s = float(env_max_wait)
+            except ValueError as e:
+                logger.warning(
+                    "Invalid UNITY_MCP_SESSION_RESOLVE_MAX_WAIT_S=%r, using default: %s",
+                    env_max_wait, e)
+                max_wait_s = cls._RELOAD_MAX_WAIT_S
+        else:
+            # Adaptive: use longer wait if we've seen this project before (likely reload)
+            has_history = (
+                (target_hash and target_hash in cls._known_project_hashes)
+                or (not target_hash and len(cls._known_project_hashes) > 0)
+            )
+            max_wait_s = cls._RELOAD_MAX_WAIT_S if has_history else cls._NO_HISTORY_MAX_WAIT_S
+
+        # Clamp to [0, 20] to prevent misconfiguration from causing excessive waits
+        max_wait_s = max(0.0, min(max_wait_s, 20.0))
+        if not retry_on_reload:
+            max_wait_s = 0.0
+        retry_ms = float(getattr(config, "reload_retry_ms", 250))
+        sleep_seconds = max(0.05, min(0.25, retry_ms / 1000.0))
 
         async def _try_once() -> tuple[str | None, int, bool]:
             explicit_required = config.http_remote_hosted
@@ -937,6 +1001,25 @@ class PluginHub(WebSocketEndpoint):
                 time.monotonic() - wait_started,
                 unity_instance or "default",
             )
+
+        # Deterministic readiness probe (Issue #657): after the session reconnects
+        # following a domain reload, check if Unity is still compiling before
+        # declaring the session ready. This avoids sending commands that will just
+        # get "reloading" rejections.
+        if session_id is not None and wait_started is not None and retry_on_reload:
+            probe_deadline = min(deadline, time.monotonic() + 10.0)
+            ready = await cls._probe_editor_ready(session_id, probe_deadline)
+            if ready:
+                logger.debug(
+                    "Editor ready confirmed via probe after session restore (instance=%s)",
+                    unity_instance or "default",
+                )
+            else:
+                logger.debug(
+                    "Editor still busy after probe deadline (instance=%s); proceeding anyway",
+                    unity_instance or "default",
+                )
+
         if session_id is None and not target_hash and session_count > 1:
             raise InstanceSelectionRequiredError(
                 InstanceSelectionRequiredError._MULTIPLE_INSTANCES)
