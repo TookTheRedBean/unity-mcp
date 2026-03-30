@@ -247,10 +247,18 @@ namespace MCPForUnity.Runtime.Helpers
             int imgW = 0, imgH = 0;
             try
             {
-                tex = ScreenCapture.CaptureScreenshotAsTexture(result.SuperSize);
+                // CaptureScreenshotAsTexture may fail if called before end-of-frame.
+                // Retry a few times with short delays to let the frame complete.
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    tex = ScreenCapture.CaptureScreenshotAsTexture(result.SuperSize);
+                    if (tex != null) break;
+                    System.Threading.Thread.Sleep(50);
+                }
+
                 if (tex == null)
                 {
-                    // Fallback to camera-based if ScreenCapture fails
+                    // Fallback to camera-based capture
                     var cam = Camera.main;
                     if (cam != null)
                         return CaptureFromCameraToAssetsFolder(cam, fileName, superSize, ensureUniqueFileName, includeImage, maxResolution);
