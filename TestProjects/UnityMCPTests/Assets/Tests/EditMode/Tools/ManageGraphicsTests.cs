@@ -16,6 +16,7 @@ namespace MCPForUnityTests.Editor.Tools
         private bool _hasVolumeSystem;
         private bool _hasURP;
         private bool _hasHDRP;
+        private bool _hasSceneView;
 
         [SetUp]
         public void SetUp()
@@ -31,6 +32,8 @@ namespace MCPForUnityTests.Editor.Tools
                 _hasURP = data?.Value<bool>("hasURP") ?? false;
                 _hasHDRP = data?.Value<bool>("hasHDRP") ?? false;
             }
+
+            _hasSceneView = UnityEditor.SceneView.lastActiveSceneView != null;
         }
 
         [TearDown]
@@ -588,7 +591,10 @@ namespace MCPForUnityTests.Editor.Tools
                 ["action"] = "stats_set_scene_debug",
                 ["mode"] = "Wireframe"
             }));
-            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            if (_hasSceneView)
+                Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            else
+                Assert.IsFalse(result.Value<bool>("success"));
         }
 
         [Test]
