@@ -205,6 +205,34 @@ def test_memory_take_snapshot_forwards_path(mock_unity):
     assert mock_unity["params"]["snapshot_path"] == "/tmp/snap.snap"
 
 
+def test_memory_take_snapshot_forwards_label(mock_unity):
+    result = asyncio.run(
+        manage_profiler(SimpleNamespace(), action="memory_take_snapshot", snapshot_label="battle-return")
+    )
+    assert result["success"] is True
+    assert mock_unity["params"]["snapshot_label"] == "battle-return"
+
+
+def test_memory_take_snapshot_forwards_capture_flags(mock_unity):
+    result = asyncio.run(
+        manage_profiler(
+            SimpleNamespace(),
+            action="memory_take_snapshot",
+            capture_flags=["ManagedObjects", "NativeObjects"],
+        )
+    )
+    assert result["success"] is True
+    assert mock_unity["params"]["capture_flags"] == ["ManagedObjects", "NativeObjects"]
+
+
+def test_memory_take_snapshot_forwards_include_screenshot(mock_unity):
+    result = asyncio.run(
+        manage_profiler(SimpleNamespace(), action="memory_take_snapshot", include_screenshot=True)
+    )
+    assert result["success"] is True
+    assert mock_unity["params"]["include_screenshot"] is True
+
+
 def test_memory_compare_forwards_both_paths(mock_unity):
     result = asyncio.run(
         manage_profiler(

@@ -46,7 +46,7 @@ ALL_ACTIONS = (
         "- get_counters: Generic counter read by category + optional counter names (async, 1-frame wait)\n"
         "- get_object_memory: Memory size of a specific object by path\n\n"
         "MEMORY SNAPSHOT (requires com.unity.memoryprofiler):\n"
-        "- memory_take_snapshot: Capture memory snapshot to file\n"
+        "- memory_take_snapshot: Capture memory snapshot to file (snapshot_path, snapshot_label, capture_flags, include_screenshot)\n"
         "- memory_list_snapshots: List available .snap files\n"
         "- memory_compare_snapshots: Compare two snapshot files\n\n"
         "FRAME DEBUGGER:\n"
@@ -70,6 +70,9 @@ async def manage_profiler(
     enable_callstacks: Annotated[Optional[bool], "Enable allocation callstacks for profiler_start."] = None,
     areas: Annotated[Optional[dict[str, bool]], "Dict of area name to bool for profiler_set_areas."] = None,
     snapshot_path: Annotated[Optional[str], "Output path for memory_take_snapshot."] = None,
+    snapshot_label: Annotated[Optional[str], "Optional label used when auto-generating a memory_take_snapshot filename."] = None,
+    capture_flags: Annotated[Optional[list[str]], "Optional Unity.Profiling.Memory.CaptureFlags names for memory_take_snapshot."] = None,
+    include_screenshot: Annotated[Optional[bool], "Capture a sidecar screenshot when supported for memory_take_snapshot."] = None,
     search_path: Annotated[Optional[str], "Search directory for memory_list_snapshots."] = None,
     snapshot_a: Annotated[Optional[str], "First snapshot path for memory_compare_snapshots."] = None,
     snapshot_b: Annotated[Optional[str], "Second snapshot path for memory_compare_snapshots."] = None,
@@ -92,7 +95,9 @@ async def manage_profiler(
         "object_path": object_path,
         "log_file": log_file, "enable_callstacks": enable_callstacks,
         "areas": areas,
-        "snapshot_path": snapshot_path, "search_path": search_path,
+        "snapshot_path": snapshot_path, "snapshot_label": snapshot_label,
+        "capture_flags": capture_flags, "include_screenshot": include_screenshot,
+        "search_path": search_path,
         "snapshot_a": snapshot_a, "snapshot_b": snapshot_b,
         "page_size": page_size, "cursor": cursor,
     }
