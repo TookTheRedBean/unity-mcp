@@ -25,6 +25,9 @@ TOOL_GROUPS: dict[str, str] = {
     "testing": "Test runner & async test jobs",
     "probuilder": "ProBuilder 3D modeling – requires com.unity.probuilder package",
     "addressables": "Addressable Assets – dynamic loading, groups, labels & builds (requires com.unity.addressables)",
+    "profiling": "Unity Profiler session control, counters, memory snapshots & Frame Debugger",
+    "addressables": "Addressable Assets – dynamic loading, groups, labels & builds (requires com.unity.addressables)",
+    "profiling": "Unity Profiler session control, counters, memory snapshots & Frame Debugger",
 }
 
 DEFAULT_ENABLED_GROUPS: set[str] = {"core"}
